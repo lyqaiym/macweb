@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Xcode — 用户个人数据（打开工程后自动生成，不要提交）
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# Xcode — 构建产物
+build/
+DerivedData/
+*.dSYM
+*.hmap
+
+# Swift Package Manager（若以后引入依赖）
+.build/
+.swiftpm/
+
+# Claude Code — 本地个人设置（.claude/settings.json 共享配置可提交）
+.claude/settings.local.json
