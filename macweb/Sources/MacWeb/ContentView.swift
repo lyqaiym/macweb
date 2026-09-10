@@ -15,6 +15,35 @@ private enum PanelPosition {
     case trailing
 }
 
+// NSTextView 对大文本惰性布局，比 SwiftUI Text(.textSelection) 快得多
+private struct PlainTextView: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        let textView = scrollView.documentView as! NSTextView
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        textView.textColor = .labelColor
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainerInset = NSSize(width: 0, height: 4)
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        if textView.string != text {
+            textView.string = text
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var model = AppModel()
     @State private var detailSection: DetailSection = .requestHeaders
@@ -269,15 +298,9 @@ struct ContentView: View {
         case .responseHeaders: text = formatHeaders(r.responseHeaders)
         case .responseBody:    text = r.responseBody
         }
-        return ScrollView {
-            Text(text.isEmpty ? "（无内容）" : text)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 2)
-        }
-        .frame(maxHeight: 150)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+        return PlainTextView(text: text.isEmpty ? "（无内容）" : text)
+            .frame(maxHeight: 150)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
     }
 
     private func formatHeaders(_ headers: [String: String]) -> String {

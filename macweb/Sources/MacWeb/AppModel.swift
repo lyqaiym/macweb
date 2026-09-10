@@ -3,6 +3,13 @@ import Combine
 import SwiftUI
 import WebKit
 
+private struct PendingDocRequest {
+    var url: String
+    var method: String
+    var headers: [String: String]
+    var body: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var resources: [WebResource] = []
@@ -15,6 +22,7 @@ final class AppModel: ObservableObject {
 
     weak var webView: WKWebView?
     var lastURL: URL?
+    private var pendingDocRequest: PendingDocRequest?
 
     func loadAddress(_ text: String) {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,13 +45,46 @@ final class AppModel: ObservableObject {
         resources.removeAll()
         selected.removeAll()
         urlText = url.absoluteString
-        resources.append(WebResource(url: url.absoluteString, kind: .document, method: "GET"))
+        var doc = WebResource(url: url.absoluteString, kind: .document, method: "GET")
+        if let req = pendingDocRequest, req.url == url.absoluteString {
+            doc.method = req.method
+            doc.requestHeaders = req.headers
+            doc.requestBody = req.body
+            doc.hasRequest = true
+            pendingDocRequest = nil
+        }
+        resources.append(doc)
     }
 
     func finishNavigation(url: URL?, title: String?) {
         if let url { urlText = url.absoluteString }
         pageTitle = title ?? ""
         syncNavButtons()
+    }
+
+    // MARK: - 文档（主页面导航）的请求/响应捕获
+
+    func documentRequest(url: URL, method: String, headers: [String: String], body: String) {
+        pendingDocRequest = PendingDocRequest(
+            url: url.absoluteString, method: method, headers: headers, body: truncateBody(body)
+        )
+    }
+
+    func documentResponse(url: URL, status: Int, mimeType: String, headers: [String: String]) {
+        guard let idx = resources.firstIndex(where: { $0.kind == .document && $0.url == url.absoluteString }) else { return }
+        resources[idx].status = status
+        resources[idx].mimeType = mimeType
+        resources[idx].responseHeaders = headers
+    }
+
+    func documentBody(url: URL, body: String) {
+        guard let idx = resources.firstIndex(where: { $0.kind == .document && $0.url == url.absoluteString }) else { return }
+        resources[idx].responseBody = truncateBody(body)
+    }
+
+    private func truncateBody(_ s: String, _ max: Int = 200_000) -> String {
+        guard s.count > max else { return s }
+        return String(s.prefix(max)) + "…[已截断，共 \(s.count) 字符]"
     }
 
     /// 仅在值真正变化时写入，避免 @Published 触发 SwiftUI 反馈循环

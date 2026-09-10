@@ -68,6 +68,34 @@ enum MonitorScript {
                m.indexOf('svg') >= 0;
       }
 
+      // 只读取前 limit 个字符，避免把整个响应体读进内存
+      function readBodyPrefix(stream, limit, cb) {
+        if (!stream) { cb(''); return; }
+        var reader;
+        try { reader = stream.getReader(); } catch (e) { cb(''); return; }
+        var decoder = new TextDecoder();
+        var acc = '';
+        function pump() {
+          reader.read().then(function (r) {
+            if (r.done) {
+              try { acc += decoder.decode(); } catch (e) {}
+              cb(acc);
+              return;
+            }
+            var chunk = '';
+            try { chunk = decoder.decode(r.value, { stream: true }); } catch (e) {}
+            acc += chunk;
+            if (acc.length >= limit) {
+              try { reader.cancel(); } catch (e) {}
+              cb(acc.slice(0, limit) + '…[已截断]');
+              return;
+            }
+            pump();
+          }).catch(function () { cb(acc); });
+        }
+        pump();
+      }
+
       // ---------- Resource / Navigation Timing ----------
       try {
         var po = new PerformanceObserver(function (list) {
@@ -128,12 +156,16 @@ enum MonitorScript {
               try { clen = parseInt(res.headers.get('content-length') || '0', 10) || 0; } catch (e) {}
               if (isTextualMime(mime) && clen < 500000) {
                 var clone = null;
-                try { if (res.clone) clone = res.clone(); } catch (e) {}
-                var bodyPromise = clone ? clone.text().catch(function () { return ''; }) : Promise.resolve('');
-                bodyPromise.then(function (body) {
-                  base.responseBody = truncateText(body, 200000);
+                try { if (res.clone && res.body) clone = res.clone(); } catch (e) {}
+                if (clone) {
+                  readBodyPrefix(clone.body, 200000, function (body) {
+                    base.responseBody = body;
+                    send(base);
+                  });
+                } else {
+                  base.responseBody = '';
                   send(base);
-                });
+                }
               } else {
                 base.responseBody = '';
                 send(base);

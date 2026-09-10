@@ -122,6 +122,39 @@ extension WebView {
 
         // MARK: WKNavigationDelegate
 
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.targetFrame?.isMainFrame == true,
+               let url = navigationAction.request.url {
+                var headers: [String: String] = [:]
+                if let h = navigationAction.request.allHTTPHeaderFields { headers = h }
+                var body = ""
+                if let data = navigationAction.request.httpBody {
+                    body = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+                }
+                let method = navigationAction.request.httpMethod ?? "GET"
+                Task { @MainActor in model.documentRequest(url: url, method: method, headers: headers, body: body) }
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            if let url = navigationResponse.response.url,
+               let http = navigationResponse.response as? HTTPURLResponse {
+                var headers: [String: String] = [:]
+                for (k, v) in http.allHeaderFields {
+                    headers[String(describing: k)] = String(describing: v)
+                }
+                Task { @MainActor in
+                    model.documentResponse(url: url, status: http.statusCode, mimeType: http.mimeType ?? "", headers: headers)
+                }
+            }
+            decisionHandler(.allow)
+        }
+
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             guard let url = webView.url else { return }
             Task { @MainActor in model.beginNavigation(url: url) }
@@ -132,6 +165,12 @@ extension WebView {
             let title = webView.title
             Task { @MainActor in model.finishNavigation(url: url, title: title) }
             autofillJenkinsLogin(webView)
+            if let url {
+                webView.evaluateJavaScript("document.documentElement ? document.documentElement.outerHTML.slice(0, 200000) : ''") { [weak self] result, _ in
+                    let html = result as? String ?? ""
+                    Task { @MainActor in self?.model.documentBody(url: url, body: html) }
+                }
+            }
         }
 
         // Jenkins 登录页自动填入用户名（本机调试用）
