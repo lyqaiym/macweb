@@ -29,7 +29,13 @@ struct WebView: NSViewRepresentable {
 
         model.webView = webView
         context.coordinator.install(webView: webView)
-        webView.loadHTMLString(Self.welcomeHTML, baseURL: nil)
+        // 切换面板布局会重建本 representable，恢复上次 URL 而不是回到欢迎页
+        if let last = model.lastURL, let scheme = last.scheme,
+           ["http", "https"].contains(scheme.lowercased()) {
+            webView.load(URLRequest(url: last))
+        } else {
+            webView.loadHTMLString(Self.welcomeHTML, baseURL: nil)
+        }
         return webView
     }
 
@@ -125,6 +131,20 @@ extension WebView {
             let url = webView.url
             let title = webView.title
             Task { @MainActor in model.finishNavigation(url: url, title: title) }
+            autofillJenkinsLogin(webView)
+        }
+
+        // Jenkins 登录页自动填入用户名（本机调试用）
+        private func autofillJenkinsLogin(_ webView: WKWebView) {
+            guard let url = webView.url,
+                  (url.host == "127.0.0.1" || url.host == "localhost"),
+                  url.port == 8080,
+                  url.path == "/login" else { return }
+            webView.evaluateJavaScript(
+                "document.getElementById('j_username').value = 'android';" +
+                "document.getElementById('j_password').value = 'android'",
+                completionHandler: nil
+            )
         }
 
         func webView(_ webView: WKWebView,

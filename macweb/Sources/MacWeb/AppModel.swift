@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     @Published var canGoForward = false
 
     weak var webView: WKWebView?
+    var lastURL: URL?
 
     func loadAddress(_ text: String) {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,6 +33,7 @@ final class AppModel: ObservableObject {
     }
 
     func beginNavigation(url: URL) {
+        lastURL = url
         resources.removeAll()
         selected.removeAll()
         urlText = url.absoluteString
@@ -112,6 +114,10 @@ final class AppModel: ObservableObject {
         let kind = ResourceKind(rawValue: kindRaw) ?? .other
         let startTime = d["startTime"] as? Double ?? 0
         let failed = d["failed"] as? Bool ?? false
+        let requestHeaders = d["requestHeaders"] as? [String: String] ?? [:]
+        let requestBody = d["requestBody"] as? String ?? ""
+        let responseHeaders = d["responseHeaders"] as? [String: String] ?? [:]
+        let responseBody = d["responseBody"] as? String ?? ""
 
         if let idx = mergeIndex(url: url, kind: kind, startTime: startTime, needsTiming: false) {
             resources[idx].method = d["method"] as? String ?? "GET"
@@ -120,6 +126,10 @@ final class AppModel: ObservableObject {
             resources[idx].hasRequest = true
             if resources[idx].startTime == 0 { resources[idx].startTime = startTime }
             if let status = d["status"] as? Int { resources[idx].status = status }
+            resources[idx].requestHeaders = requestHeaders
+            resources[idx].requestBody = requestBody
+            resources[idx].responseHeaders = responseHeaders
+            resources[idx].responseBody = responseBody
         } else {
             resources.append(WebResource(
                 url: url,
@@ -129,7 +139,11 @@ final class AppModel: ObservableObject {
                 mimeType: d["mimeType"] as? String ?? "",
                 startTime: startTime,
                 failed: failed,
-                hasRequest: true
+                hasRequest: true,
+                requestHeaders: requestHeaders,
+                requestBody: requestBody,
+                responseHeaders: responseHeaders,
+                responseBody: responseBody
             ))
         }
     }

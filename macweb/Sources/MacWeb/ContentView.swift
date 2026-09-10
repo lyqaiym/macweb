@@ -1,18 +1,43 @@
 import SwiftUI
+import AppKit
 import WebKit
+
+private enum DetailSection: String, CaseIterable, Identifiable {
+    case requestHeaders = "请求头"
+    case requestBody = "请求体"
+    case responseHeaders = "响应头"
+    case responseBody = "响应体"
+    var id: String { rawValue }
+}
+
+private enum PanelPosition {
+    case bottom
+    case trailing
+}
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    @State private var detailSection: DetailSection = .requestHeaders
+    @State private var panelPosition: PanelPosition = .trailing
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            VSplitView {
-                WebView(model: model)
-                    .frame(minHeight: 260)
-                resourcePanel
-                    .frame(minHeight: 200, idealHeight: 300)
+            if panelPosition == .bottom {
+                VSplitView {
+                    WebView(model: model)
+                        .frame(minHeight: 260)
+                    resourcePanel
+                        .frame(minHeight: 200, idealHeight: 300)
+                }
+            } else {
+                HSplitView {
+                    WebView(model: model)
+                        .frame(minWidth: 400)
+                    resourcePanel
+                        .frame(minWidth: 360, idealWidth: 420)
+                }
             }
         }
         .frame(minWidth: 980, minHeight: 660)
@@ -46,9 +71,28 @@ struct ContentView: View {
 
             Button("前往") { model.loadAddress(model.urlText) }
                 .buttonStyle(.borderedProminent)
+
+            Divider()
+                .frame(height: 16)
+
+            panelPositionButton(.bottom, symbol: "rectangle.split.2x1", help: "资源面板在下方")
+            panelPositionButton(.trailing, symbol: "rectangle.split.1x2", help: "资源面板在右侧")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func panelPositionButton(_ position: PanelPosition, symbol: String, help: String) -> some View {
+        if panelPosition == position {
+            Button { panelPosition = position } label: { Image(systemName: symbol) }
+                .buttonStyle(.borderedProminent)
+                .help(help)
+        } else {
+            Button { panelPosition = position } label: { Image(systemName: symbol) }
+                .buttonStyle(.bordered)
+                .help(help)
+        }
     }
 
     // MARK: - 资源面板
@@ -94,6 +138,10 @@ struct ContentView: View {
                     Text(resourceAttributed(r))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .contextMenu {
+                            Button("复制地址") { copyToPasteboard(r.url) }
+                            Button("复制 curl 命令") { copyToPasteboard(r.curlCommand) }
+                        }
                 }
 
                 TableColumn("MIME") { r in
@@ -184,7 +232,7 @@ struct ContentView: View {
     // MARK: - 详情
 
     private func detailView(_ r: WebResource) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(r.url)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
@@ -200,7 +248,50 @@ struct ContentView: View {
                 if let d = r.duration { detailChip("耗时", String(format: "%.1f ms", d)) }
                 if r.failed { detailChip("结果", "请求失败") }
             }
+            Picker("", selection: $detailSection) {
+                ForEach(DetailSection.allCases) { s in
+                    Text(s.rawValue).tag(s)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+
+            detailContent(r)
         }
+    }
+
+    private func detailContent(_ r: WebResource) -> some View {
+        let text: String
+        switch detailSection {
+        case .requestHeaders:  text = formatHeaders(r.requestHeaders)
+        case .requestBody:     text = r.requestBody
+        case .responseHeaders: text = formatHeaders(r.responseHeaders)
+        case .responseBody:    text = r.responseBody
+        }
+        return ScrollView {
+            Text(text.isEmpty ? "（无内容）" : text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 2)
+        }
+        .frame(maxHeight: 150)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+    }
+
+    private func formatHeaders(_ headers: [String: String]) -> String {
+        guard !headers.isEmpty else { return "" }
+        return headers
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { "\($0.key): \($0.value)" }
+            .joined(separator: "\n")
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
     }
 
     private func detailChip(_ label: String, _ value: String) -> some View {

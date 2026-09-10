@@ -63,6 +63,10 @@ struct WebResource: Identifiable {
     var failed: Bool = false
     var hasTiming: Bool = false
     var hasRequest: Bool = false
+    var requestHeaders: [String: String] = [:]
+    var requestBody: String = ""
+    var responseHeaders: [String: String] = [:]
+    var responseBody: String = ""
 
     var host: String { URL(string: url)?.host ?? "" }
 
@@ -75,4 +79,24 @@ struct WebResource: Identifiable {
     }
 
     var isPending: Bool { !hasTiming && status == nil && !failed }
+
+    var curlCommand: String {
+        let m = method.isEmpty ? "GET" : method
+        var parts = ["curl"]
+        if m != "GET" { parts.append("-X \(m)") }
+        let skipped: Set<String> = ["host", "content-length", "connection", "accept-encoding"]
+        for (k, v) in requestHeaders.sorted(by: { $0.key < $1.key })
+        where !skipped.contains(k.lowercased()) {
+            parts.append("-H \(Self.shellQuote("\(k): \(v)"))")
+        }
+        if !requestBody.isEmpty {
+            parts.append("--data-raw \(Self.shellQuote(requestBody))")
+        }
+        parts.append(Self.shellQuote(url))
+        return parts.joined(separator: " ")
+    }
+
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }
