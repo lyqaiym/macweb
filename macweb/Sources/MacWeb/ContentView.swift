@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import UniformTypeIdentifiers
 
 private enum DetailSection: String, CaseIterable, Identifiable {
     case requestHeaders = "请求头"
@@ -48,6 +49,13 @@ struct ContentView: View {
     @StateObject private var model = AppModel()
     @State private var detailSection: DetailSection = .requestHeaders
     @State private var panelPosition: PanelPosition = .trailing
+    @State private var showJobSecPopover = false
+    @State private var isScoring = false
+    @State private var scoreReport = ""
+    @State private var scoreSavedPath = ""
+    @State private var showScoreSheet = false
+    @State private var scoreError = ""
+    @State private var showScoreError = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,14 +63,14 @@ struct ContentView: View {
             Divider()
             if panelPosition == .bottom {
                 VSplitView {
-                    WebView(model: model)
+                    browserView
                         .frame(minHeight: 260)
                     resourcePanel
                         .frame(minHeight: 200, idealHeight: 300)
                 }
             } else {
                 HSplitView {
-                    WebView(model: model)
+                    browserView
                         .frame(minWidth: 400)
                     resourcePanel
                         .frame(minWidth: 360, idealWidth: 420)
@@ -70,6 +78,167 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 980, minHeight: 660)
+        .sheet(isPresented: $showScoreSheet) {
+            scoreSheet
+        }
+        .alert("AI 打分失败", isPresented: $showScoreError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(scoreError)
+        }
+    }
+
+    // MARK: - 网页视图 + 职位提取按钮
+
+    private var browserView: some View {
+        WebView(model: model)
+            .overlay(alignment: .trailing) {
+                if model.jobSecButtonVisible {
+                    Button {
+                        model.extractJobSec { showJobSecPopover = true }
+                    } label: {
+                        Label("提取职位", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.trailing, 12)
+                    .popover(isPresented: $showJobSecPopover) {
+                        jobSecPopover
+                    }
+                }
+            }
+    }
+
+    private var jobSecPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("职位描述").font(.headline)
+            ScrollView {
+                Text(model.jobSecText.isEmpty ? "未找到 .job-sec 元素" : model.jobSecText)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(width: 420, height: 320)
+            HStack(spacing: 8) {
+                Button {
+                    Task { await runScoring() }
+                } label: {
+                    if isScoring {
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.small)
+                            Text("打分中…")
+                        }
+                    } else {
+                        Label("AI打分", systemImage: "sparkles")
+                    }
+                }
+                .disabled(isScoring || model.jobSecText.isEmpty)
+
+                Spacer()
+
+                Button("复制") {
+                    copyToPasteboard(model.jobSecText)
+                }
+                .disabled(model.jobSecText.isEmpty)
+            }
+        }
+        .padding()
+    }
+
+    private var scoreSheet: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("AI 打分报告").font(.headline)
+            if !scoreSavedPath.isEmpty {
+                Text("已保存到：\(scoreSavedPath)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            PlainTextView(text: scoreReport)
+            HStack {
+                Button("复制") { copyToPasteboard(scoreReport) }
+                Spacer()
+                Button("完成") { showScoreSheet = false }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+        .frame(minWidth: 640, minHeight: 520)
+    }
+
+    private func runScoring() async {
+        isScoring = true
+        defer { isScoring = false }
+        do {
+            try await performScore()
+        } catch AIScorer.ScoreError.resumeNotSet {
+            guard chooseResumeFile() else { return }
+            do {
+                try await performScore()
+            } catch {
+                scoreError = error.localizedDescription
+                showScoreError = true
+            }
+        } catch {
+            scoreError = error.localizedDescription
+            showScoreError = true
+        }
+    }
+
+    private func performScore() async throws {
+        let result = try await AIScorer.score(jd: model.jobSecText)
+        scoreReport = result.report
+        scoreSavedPath = result.savedPath
+        showScoreSheet = true
+    }
+
+    // MARK: - 配置写入 .env
+
+    @discardableResult
+    private func chooseResumeFile() -> Bool {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.pdf, .text]
+        panel.message = "选择简历文件（PDF / txt / md）"
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        do {
+            try AIScorer.updateEnv(key: "RESUME_PATH", value: url.path)
+            showInfo("简历路径已保存", url.path)
+            return true
+        } catch {
+            showInfo("保存失败", error.localizedDescription)
+            return false
+        }
+    }
+
+    private func promptAPIKey() {
+        let alert = NSAlert()
+        alert.messageText = "设置 DeepSeek API Key"
+        alert.informativeText = "将写入 .env 的 DEEPSEEK_API_KEY"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "sk-..."
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        do {
+            try AIScorer.updateEnv(key: "DEEPSEEK_API_KEY", value: key)
+            showInfo("已保存", "DEEPSEEK_API_KEY 已写入 .env")
+        } catch {
+            showInfo("保存失败", error.localizedDescription)
+        }
+    }
+
+    private func showInfo(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "好")
+        alert.runModal()
     }
 
     // MARK: - 工具栏
@@ -100,6 +269,14 @@ struct ContentView: View {
 
             Button("前往") { model.loadAddress(model.urlText) }
                 .buttonStyle(.borderedProminent)
+
+            Divider()
+                .frame(height: 16)
+
+            Button { chooseResumeFile() } label: { Label("选简历", systemImage: "doc.badge.plus") }
+                .help("选择简历文件并写入 .env 的 RESUME_PATH")
+            Button { promptAPIKey() } label: { Label("API Key", systemImage: "key") }
+                .help("设置 DeepSeek API Key 并写入 .env")
 
             Divider()
                 .frame(height: 16)

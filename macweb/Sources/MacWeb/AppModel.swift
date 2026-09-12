@@ -19,6 +19,8 @@ final class AppModel: ObservableObject {
     @Published var pageTitle: String = ""
     @Published var canGoBack = false
     @Published var canGoForward = false
+    @Published var jobSecButtonVisible = false
+    @Published var jobSecText = ""
 
     weak var webView: WKWebView?
     var lastURL: URL?
@@ -45,6 +47,8 @@ final class AppModel: ObservableObject {
         resources.removeAll()
         selected.removeAll()
         urlText = url.absoluteString
+        jobSecButtonVisible = false
+        jobSecText = ""
         var doc = WebResource(url: url.absoluteString, kind: .document, method: "GET")
         if let req = pendingDocRequest, req.url == url.absoluteString {
             doc.method = req.method
@@ -60,6 +64,27 @@ final class AppModel: ObservableObject {
         if let url { urlText = url.absoluteString }
         pageTitle = title ?? ""
         syncNavButtons()
+        updateJobSecVisibility(url: url)
+    }
+
+    private func updateJobSecVisibility(url: URL?) {
+        guard let url else { jobSecButtonVisible = false; return }
+        let isMobileDetail = url.host == "m.zhipin.com" && url.path.hasPrefix("/job_detail")
+        let isSearchList = url.host == "www.zhipin.com" && url.absoluteString.contains("/geek/jobs?query=")
+        let isJob_detail = url.host == "www.zhipin.com" && url.absoluteString.contains("/job_detail/")
+        jobSecButtonVisible = isMobileDetail || isSearchList || isJob_detail
+    }
+
+    func extractJobSec(completion: @escaping () -> Void = {}) {
+        guard let webView else { completion(); return }
+        let js = "document.querySelector('.job-sec') ? document.querySelector('.job-sec').innerText : ''"
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            let text = (result as? String) ?? ""
+            Task { @MainActor in
+                if !text.isEmpty { self?.jobSecText = text }
+                completion()
+            }
+        }
     }
 
     // MARK: - 文档（主页面导航）的请求/响应捕获
@@ -159,6 +184,7 @@ final class AppModel: ObservableObject {
         let requestBody = d["requestBody"] as? String ?? ""
         let responseHeaders = d["responseHeaders"] as? [String: String] ?? [:]
         let responseBody = d["responseBody"] as? String ?? ""
+        captureJobDescription(url: url, responseBody: responseBody)
 
         if let idx = mergeIndex(url: url, kind: kind, startTime: startTime, needsTiming: false) {
             resources[idx].method = d["method"] as? String ?? "GET"
@@ -187,6 +213,20 @@ final class AppModel: ObservableObject {
                 responseBody: responseBody
             ))
         }
+    }
+
+    /// detail.json 接口返回的职位描述直接写入 jobSecText
+    private func captureJobDescription(url: String, responseBody: String) {
+        guard url.contains("wapi/zpgeek/job/detail.json") else { return }
+        guard let data = responseBody.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let json = obj as? [String: Any],
+              let zpData = json["zpData"] as? [String: Any],
+              let jobInfo = zpData["jobInfo"] as? [String: Any],
+              let post = jobInfo["postDescription"] as? String,
+              !post.isEmpty else { return }
+        jobSecText = post
+        NSLog("[职位描述] 已从 detail.json 提取 postDescription（%d 字符）", post.count)
     }
 
     /// Match an incoming report to an existing row that is still missing this side of data.
