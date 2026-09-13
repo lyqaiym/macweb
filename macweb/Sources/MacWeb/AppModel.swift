@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 import WebKit
+import AppKit
 
 private struct PendingDocRequest {
     var url: String
@@ -25,6 +26,7 @@ final class AppModel: ObservableObject {
     weak var webView: WKWebView?
     var lastURL: URL?
     private var pendingDocRequest: PendingDocRequest?
+    private(set) var cookies: [HTTPCookie] = []
 
     func loadAddress(_ text: String) {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,6 +67,14 @@ final class AppModel: ObservableObject {
         pageTitle = title ?? ""
         syncNavButtons()
         updateJobSecVisibility(url: url)
+        refreshCookies()
+    }
+
+    func refreshCookies() {
+        webView?.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] list in
+            let sorted = list.sorted { $0.name < $1.name }
+            Task { @MainActor in self?.cookies = sorted }
+        }
     }
 
     private func updateJobSecVisibility(url: URL?) {
@@ -87,6 +97,82 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - 职位描述：从原始 HTML 响应体抓明文（绕过 mixup 反爬）
+
+    private let htmlFetcher: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 60
+        config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
+        return URLSession(configuration: config)
+    }()
+
+    /// WKWebView 拿不到主文档响应体；mixup 又会把 DOM 文字打乱。
+    /// 这里用 URLSession 带同样 Cookie 重新拉取原始 HTML，直接解析明文。
+    func fetchRawJobSec(completion: @escaping () -> Void = {}) {
+        guard let url = webView?.url ?? lastURL else { completion(); return }
+        var request = URLRequest(url: url)
+        request.setValue(WebView.safariUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+        if let cookie = WebResource.cookieHeader(for: url, cookies: cookies) {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+        htmlFetcher.dataTask(with: request) { [weak self] data, _, _ in
+            let html = data.flatMap { String(data: $0, encoding: .utf8) ?? String(data: $0, encoding: .isoLatin1) }
+            let text = html.flatMap { self?.extractJobSecFromHTML($0) } ?? ""
+            Task { @MainActor in
+                if !text.isEmpty {
+                    self?.jobSecText = text
+                    NSLog("[职位描述] 已从原始 HTML 提取 job-sec-text（%d 字符）", text.count)
+                }
+                completion()
+            }
+        }.resume()
+    }
+
+    private func extractJobSecFromHTML(_ html: String) -> String? {
+        // 桌面版：<div class="job-sec-text">…</div>
+        if let text = extractFragment(html, opening: #"<div class="job-sec-text"[^>]*>"#) { return text }
+        // 移动版：<div class="job-sec">…<div class="text">…</div>
+        if let text = extractFragment(html, opening: #"<div class="text"[^>]*>"#) { return text }
+        return nil
+    }
+
+    private func extractFragment(_ html: String, opening: String) -> String? {
+        guard let start = html.range(of: opening, options: .regularExpression) else { return nil }
+        let tail = html[start.upperBound...]
+        guard let end = tail.range(of: "</div>") else { return nil }
+        var fragment = String(tail[..<end.lowerBound])
+        // mixup 噪音 span（如 <span>boss</span> / <span>直聘</span>）整段剔除
+        fragment = fragment.replacingOccurrences(
+            of: #"<span[^>]*>[\s\S]*?</span>"#, with: "", options: .regularExpression
+        )
+        return decodeHTMLEntities(fragment)
+    }
+
+    private func decodeHTMLEntities(_ fragment: String) -> String {
+        let data = Data("<body>\(fragment)</body>".utf8)
+        let opts: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue,
+        ]
+        if let attr = try? NSAttributedString(data: data, options: opts, documentAttributes: nil) {
+            let s = attr.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !s.isEmpty { return s }
+        }
+        var s = fragment.replacingOccurrences(of: #"<br\s*/?>"#, with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&ldquo;", with: "“")
+            .replacingOccurrences(of: "&rdquo;", with: "”")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - 文档（主页面导航）的请求/响应捕获
 
     func documentRequest(url: URL, method: String, headers: [String: String], body: String) {
@@ -107,7 +193,7 @@ final class AppModel: ObservableObject {
         resources[idx].responseBody = truncateBody(body)
     }
 
-    private func truncateBody(_ s: String, _ max: Int = 200_000) -> String {
+    private func truncateBody(_ s: String, _ max: Int = 20000_000) -> String {
         guard s.count > max else { return s }
         return String(s.prefix(max)) + "…[已截断，共 \(s.count) 字符]"
     }

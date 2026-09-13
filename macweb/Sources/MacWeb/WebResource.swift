@@ -80,20 +80,37 @@ struct WebResource: Identifiable {
 
     var isPending: Bool { !hasTiming && status == nil && !failed }
 
-    var curlCommand: String {
+    func curlCommand(cookies: [HTTPCookie] = []) -> String {
         let m = method.isEmpty ? "GET" : method
         var parts = ["curl"]
         if m != "GET" { parts.append("-X \(m)") }
-        let skipped: Set<String> = ["host", "content-length", "connection", "accept-encoding"]
+        let skipped: Set<String> = ["host", "content-length", "connection", "accept-encoding", "cookie"]
         for (k, v) in requestHeaders.sorted(by: { $0.key < $1.key })
         where !skipped.contains(k.lowercased()) {
             parts.append("-H \(Self.shellQuote("\(k): \(v)"))")
+        }
+        if let cookie = Self.cookieHeader(for: URL(string: url), cookies: cookies) {
+            parts.append("-H \(Self.shellQuote("Cookie: \(cookie)"))")
         }
         if !requestBody.isEmpty {
             parts.append("--data-raw \(Self.shellQuote(requestBody))")
         }
         parts.append(Self.shellQuote(url))
         return parts.joined(separator: " ")
+    }
+
+    static func cookieHeader(for url: URL?, cookies: [HTTPCookie]) -> String? {
+        guard let url, let host = url.host else { return nil }
+        let matches = cookies.filter { cookie in
+            let domain = cookie.domain
+            guard !domain.isEmpty else { return false }
+            let d = domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
+            let domainMatches = host == d || host.hasSuffix("." + d)
+            let pathMatches = url.path.hasPrefix(cookie.path)
+            return domainMatches && pathMatches
+        }
+        guard !matches.isEmpty else { return nil }
+        return matches.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
     }
 
     private static func shellQuote(_ s: String) -> String {

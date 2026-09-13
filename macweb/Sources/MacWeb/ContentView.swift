@@ -95,7 +95,7 @@ struct ContentView: View {
             .overlay(alignment: .trailing) {
                 if model.jobSecButtonVisible {
                     Button {
-                        model.extractJobSec { showJobSecPopover = true }
+                        model.fetchRawJobSec { showJobSecPopover = true }
                     } label: {
                         Label("提取职位", systemImage: "doc.text.magnifyingglass")
                     }
@@ -346,7 +346,7 @@ struct ContentView: View {
                         .truncationMode(.middle)
                         .contextMenu {
                             Button("复制地址") { copyToPasteboard(r.url) }
-                            Button("复制 curl 命令") { copyToPasteboard(r.curlCommand) }
+                            Button("复制 curl 命令") { copyToPasteboard(r.curlCommand(cookies: model.cookies)) }
                         }
                 }
 
